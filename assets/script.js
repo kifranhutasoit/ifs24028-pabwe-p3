@@ -1,776 +1,860 @@
-/**
- * DompetKu — Studi Kasus Praktikum 3 PABWE
- * Fitur: Tab switcher, Expense Tracker (CRUD), Bookmark Manager (CRUD), Quiz App
- * Semua data persisten memakai localStorage dengan key terpisah per fitur.
- */
+'use strict';
 
-/* ========== UTILITAS ========== */
+/* ============================================================================
+   LaciKu — assets/script.js
+   Studi kasus PABWE P3
 
-function $(selector) {
-  const el = document.querySelector(selector);
-  if (!el) throw new Error(`Elemen tidak ditemukan: ${selector}`);
-  return el;
-}
+   Struktur file:
+   1. Util bersama (storage helper, format angka, id generator)
+   2. Navigasi tab (state tab disimpan di query string URL, BUKAN localStorage)
+   3. Modul Expense Tracker   (IIFE, key storage sendiri)
+   4. Modul Bookmark Manager  (IIFE, key storage sendiri)
+   5. Modul Quiz App          (IIFE, key storage sendiri)
+   6. Bootstrap aplikasi
+   ============================================================================ */
 
-function $all(selector) {
-  return document.querySelectorAll(selector);
-}
+/* ============================================================================
+   1. UTIL BERSAMA
+   ============================================================================ */
 
-function formatRupiah(n) {
-  return "Rp" + Number(n || 0).toLocaleString("id-ID");
-}
-
-function formatDate(dateStr) {
-  if (!dateStr) return "-";
-  const d = new Date(dateStr);
-  if (isNaN(d)) return dateStr;
-  return d.toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" });
-}
-
-function openModal(modal) {
-  modal.classList.remove("hidden");
-  modal.classList.add("flex");
-  document.body.classList.add("overflow-hidden");
-}
-
-function closeModal(modal) {
-  modal.classList.add("hidden");
-  modal.classList.remove("flex");
-  document.body.classList.remove("overflow-hidden");
-}
-
-/* ========== TAB SWITCHER ========== */
-
-const TAB_STORAGE_KEY = "dompetku-active-tab";
-const tabButtons = $all(".tab-btn");
-const panels = {
-  expense: $("#panel-expense"),
-  bookmark: $("#panel-bookmark"),
-  quiz: $("#panel-quiz"),
+// Key localStorage dipisah per fitur agar data tidak saling menimpa
+const STORAGE_KEYS = {
+  EXPENSE: 'laciku_expenses_v1',
+  BOOKMARK: 'laciku_bookmarks_v1',
+  QUIZ_HIGHSCORE: 'laciku_quiz_highscore_v1',
 };
 
-function switchTab(name) {
-  if (!panels[name]) name = "expense";
-
-  Object.entries(panels).forEach(([key, panel]) => {
-    panel.classList.toggle("hidden", key !== name);
-  });
-
-  tabButtons.forEach((btn) => {
-    const active = btn.dataset.tab === name;
-    btn.setAttribute("aria-selected", String(active));
-    btn.classList.toggle("bg-sky-600", active);
-    btn.classList.toggle("text-white", active);
-    btn.classList.toggle("shadow", active);
-    btn.classList.toggle("text-slate-600", !active);
-    btn.classList.toggle("hover:bg-slate-100", !active);
-  });
-
-  localStorage.setItem(TAB_STORAGE_KEY, name);
-}
-
-tabButtons.forEach((btn) => {
-  btn.addEventListener("click", () => switchTab(btn.dataset.tab));
-});
-
-const savedTab = localStorage.getItem(TAB_STORAGE_KEY) || "expense";
-switchTab(savedTab);
-
-/* =====================================================================
-   FITUR 1: EXPENSE TRACKER (Catatan Pengeluaran Harian)
-   Key localStorage: dompetku-expenses
-   ===================================================================== */
-
-const EXP_STORAGE_KEY = "dompetku-expenses";
-
-let expenses = loadExpenses();
-let expEditingId = null;
-let expDeletingId = null;
-
-const expForm = $("#exp-form");
-const expTitle = $("#exp-title");
-const expCategory = $("#exp-category");
-const expAmount = $("#exp-amount");
-const expType = $("#exp-type");
-const expDate = $("#exp-date");
-const expFormError = $("#exp-form-error");
-
-const expSearch = $("#exp-search");
-const expFilterType = $("#exp-filter-type");
-const expSort = $("#exp-sort");
-const expList = $("#exp-list");
-const expEmpty = $("#exp-empty");
-
-const expTotalIncomeEl = $("#exp-total-income");
-const expTotalExpenseEl = $("#exp-total-expense");
-const expBalanceEl = $("#exp-balance");
-
-const expModalEdit = $("#exp-modal-edit");
-const expModalDelete = $("#exp-modal-delete");
-const expEditForm = $("#exp-edit-form");
-const expEditTitle = $("#exp-edit-title");
-const expEditCategory = $("#exp-edit-category");
-const expEditAmount = $("#exp-edit-amount");
-const expEditType = $("#exp-edit-type");
-const expEditDate = $("#exp-edit-date");
-const expDeleteTitle = $("#exp-delete-title");
-const expDeleteConfirm = $("#exp-delete-confirm");
-
-function loadExpenses() {
+/**
+ * Mengambil data JSON dari localStorage dengan aman.
+ * Mengembalikan fallback jika data tidak ada / rusak.
+ */
+function loadFromStorage(key, fallback) {
   try {
-    const raw = localStorage.getItem(EXP_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch (err) {
+    console.error(`Gagal memuat data untuk key "${key}":`, err);
+    return fallback;
   }
 }
 
-function saveExpenses() {
-  localStorage.setItem(EXP_STORAGE_KEY, JSON.stringify(expenses));
-}
-
-function showExpError(message) {
-  expFormError.textContent = message;
-  expFormError.classList.toggle("hidden", !message);
-}
-
-/** Hitung dan tampilkan ringkasan total pemasukan, pengeluaran, saldo */
-function renderExpenseSummary() {
-  const totalIncome = expenses
-    .filter((t) => t.type === "Pemasukan")
-    .reduce((sum, t) => sum + t.amount, 0);
-  const totalExpense = expenses
-    .filter((t) => t.type === "Pengeluaran")
-    .reduce((sum, t) => sum + t.amount, 0);
-
-  expTotalIncomeEl.textContent = formatRupiah(totalIncome);
-  expTotalExpenseEl.textContent = formatRupiah(totalExpense);
-  expBalanceEl.textContent = formatRupiah(totalIncome - totalExpense);
-}
-
-/** Filter, cari, urutkan, lalu render daftar transaksi ke DOM */
-function renderExpenses() {
-  const query = expSearch.value.trim().toLowerCase();
-  const typeFilter = expFilterType.value;
-  const sort = expSort.value;
-
-  let items = expenses.filter((t) => t.title.toLowerCase().includes(query));
-  if (typeFilter !== "all") {
-    items = items.filter((t) => t.type === typeFilter);
-  }
-
-  items = [...items].sort((a, b) => {
-    switch (sort) {
-      case "oldest":
-        return a.createdAt - b.createdAt;
-      case "amount-desc":
-        return b.amount - a.amount;
-      case "amount-asc":
-        return a.amount - b.amount;
-      case "newest":
-      default:
-        return b.createdAt - a.createdAt;
-    }
-  });
-
-  const noExpenses = expenses.length === 0;
-  expEmpty.classList.toggle("hidden", !noExpenses);
-  expList.classList.toggle("hidden", noExpenses);
-  expList.innerHTML = "";
-
-  if (noExpenses) {
-    renderExpenseSummary();
-    return;
-  }
-
-  if (items.length === 0) {
-    const li = document.createElement("li");
-    li.className = "rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600";
-    li.textContent = "Tidak ada transaksi yang cocok.";
-    expList.appendChild(li);
-    renderExpenseSummary();
-    return;
-  }
-
-  items.forEach((t) => {
-    const li = document.createElement("li");
-    li.className = "flex flex-col sm:flex-row sm:items-center gap-3 rounded-xl border border-slate-200 px-4 py-3";
-
-    const info = document.createElement("div");
-    info.className = "flex-1 min-w-0";
-
-    const titleEl = document.createElement("p");
-    titleEl.className = "font-medium text-slate-900 truncate";
-    titleEl.textContent = t.title;
-
-    const metaEl = document.createElement("p");
-    metaEl.className = "text-xs text-slate-500 mt-0.5";
-    metaEl.textContent = `${t.category} · ${formatDate(t.date)}`;
-
-    const badgeRow = document.createElement("div");
-    badgeRow.className = "flex items-center gap-2 mt-1";
-
-    const typeBadge = document.createElement("span");
-    typeBadge.className = `inline-flex text-xs font-semibold px-2 py-0.5 rounded-md ${
-      t.type === "Pemasukan" ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800"
-    }`;
-    typeBadge.textContent = t.type;
-
-    const amountEl = document.createElement("span");
-    amountEl.className = `text-sm font-semibold ${t.type === "Pemasukan" ? "text-emerald-700" : "text-rose-700"}`;
-    amountEl.textContent = (t.type === "Pemasukan" ? "+" : "-") + formatRupiah(t.amount);
-
-    badgeRow.append(typeBadge, amountEl);
-    info.append(titleEl, metaEl, badgeRow);
-
-    const actions = document.createElement("div");
-    actions.className = "flex items-center gap-1.5 shrink-0";
-
-    const editBtn = document.createElement("button");
-    editBtn.type = "button";
-    editBtn.className = "inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50";
-    editBtn.innerHTML = '<i class="ti ti-pencil"></i> Ubah';
-    editBtn.addEventListener("click", () => openExpEditModal(t.id));
-
-    const deleteBtn = document.createElement("button");
-    deleteBtn.type = "button";
-    deleteBtn.className = "inline-flex items-center gap-1 rounded-lg border border-rose-200 px-2.5 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50";
-    deleteBtn.innerHTML = '<i class="ti ti-trash"></i> Hapus';
-    deleteBtn.addEventListener("click", () => openExpDeleteModal(t.id));
-
-    actions.append(editBtn, deleteBtn);
-    li.append(info, actions);
-    expList.appendChild(li);
-  });
-
-  renderExpenseSummary();
-}
-
-function openExpEditModal(id) {
-  const t = expenses.find((x) => x.id === id);
-  if (!t) return;
-  expEditingId = id;
-  expEditTitle.value = t.title;
-  expEditCategory.value = t.category;
-  expEditAmount.value = t.amount;
-  expEditType.value = t.type;
-  expEditDate.value = t.date;
-  openModal(expModalEdit);
-}
-
-function openExpDeleteModal(id) {
-  const t = expenses.find((x) => x.id === id);
-  if (!t) return;
-  expDeletingId = id;
-  expDeleteTitle.textContent = `"${t.title}"`;
-  openModal(expModalDelete);
-}
-
-function closeExpEditModal() {
-  expEditingId = null;
-  expEditForm.reset();
-  closeModal(expModalEdit);
-}
-
-function closeExpDeleteModal() {
-  expDeletingId = null;
-  closeModal(expModalDelete);
-}
-
-$all("[data-close-modal='exp-edit']").forEach((btn) => btn.addEventListener("click", closeExpEditModal));
-$all("[data-close-modal='exp-delete']").forEach((btn) => btn.addEventListener("click", closeExpDeleteModal));
-expModalEdit.querySelector(".modal-backdrop").addEventListener("click", closeExpEditModal);
-expModalDelete.querySelector(".modal-backdrop").addEventListener("click", closeExpDeleteModal);
-
-expEditForm.addEventListener("submit", (e) => {
-  e.preventDefault();
-  const t = expenses.find((x) => x.id === expEditingId);
-  const amount = Number(expEditAmount.value);
-  if (!t || !expEditTitle.value.trim() || !expEditCategory.value.trim() || !amount || amount <= 0 || !expEditDate.value) return;
-
-  t.title = expEditTitle.value.trim();
-  t.category = expEditCategory.value.trim();
-  t.amount = amount;
-  t.type = expEditType.value;
-  t.date = expEditDate.value;
-
-  saveExpenses();
-  renderExpenses();
-  closeExpEditModal();
-});
-
-expDeleteConfirm.addEventListener("click", () => {
-  if (!expDeletingId) return;
-  expenses = expenses.filter((x) => x.id !== expDeletingId);
-  saveExpenses();
-  renderExpenses();
-  closeExpDeleteModal();
-});
-
-expForm.addEventListener("submit", (e) => {
-  e.preventDefault();
-
-  const title = expTitle.value.trim();
-  const category = expCategory.value.trim();
-  const amount = Number(expAmount.value);
-  const type = expType.value;
-  const date = expDate.value;
-
-  if (!title || !category || !date) {
-    showExpError("Semua field wajib diisi.");
-    return;
-  }
-  if (!amount || isNaN(amount) || amount <= 0) {
-    showExpError("Jumlah harus berupa angka valid dan lebih dari 0.");
-    return;
-  }
-
-  showExpError("");
-  expenses.push({
-    id: crypto.randomUUID(),
-    title,
-    category,
-    amount,
-    type,
-    date,
-    createdAt: Date.now(),
-  });
-
-  saveExpenses();
-  expForm.reset();
-  expType.value = "Pengeluaran";
-  renderExpenses();
-});
-
-expSearch.addEventListener("input", renderExpenses);
-expFilterType.addEventListener("change", renderExpenses);
-expSort.addEventListener("change", renderExpenses);
-
-renderExpenses();
-
-/* =====================================================================
-   FITUR 2: BOOKMARK / LINK MANAGER
-   Key localStorage: dompetku-bookmarks (berbeda dari expenses)
-   ===================================================================== */
-
-const BM_STORAGE_KEY = "dompetku-bookmarks";
-
-let bookmarks = loadBookmarks();
-let bmEditingId = null;
-let bmDeletingId = null;
-
-const bmForm = $("#bm-form");
-const bmName = $("#bm-name");
-const bmUrl = $("#bm-url");
-const bmCategory = $("#bm-category");
-const bmNote = $("#bm-note");
-const bmFormError = $("#bm-form-error");
-
-const bmSearch = $("#bm-search");
-const bmSort = $("#bm-sort");
-const bmList = $("#bm-list");
-const bmEmpty = $("#bm-empty");
-
-const bmModalEdit = $("#bm-modal-edit");
-const bmModalDelete = $("#bm-modal-delete");
-const bmEditForm = $("#bm-edit-form");
-const bmEditName = $("#bm-edit-name");
-const bmEditUrl = $("#bm-edit-url");
-const bmEditCategory = $("#bm-edit-category");
-const bmEditNote = $("#bm-edit-note");
-const bmDeleteTitle = $("#bm-delete-title");
-const bmDeleteConfirm = $("#bm-delete-confirm");
-
-function loadBookmarks() {
+/** Menyimpan data ke localStorage dalam bentuk JSON. */
+function saveToStorage(key, value) {
   try {
-    const raw = localStorage.getItem(BM_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (err) {
+    console.error(`Gagal menyimpan data untuk key "${key}":`, err);
   }
 }
 
-function saveBookmarks() {
-  localStorage.setItem(BM_STORAGE_KEY, JSON.stringify(bookmarks));
+/** Membuat id unik sederhana berbasis timestamp + random string. */
+function generateId() {
+  return `id-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/** Validasi URL sederhana: harus diawali http:// atau https:// dan berbentuk URL valid */
-function isValidUrl(value) {
-  if (!/^https?:\/\//i.test(value.trim())) return false;
-  try {
-    new URL(value.trim());
-    return true;
-  } catch {
-    return false;
+/** Format angka menjadi format Rupiah, contoh: 25000 -> "Rp 25.000". */
+function formatRupiah(value) {
+  const number = Number(value) || 0;
+  return `Rp ${number.toLocaleString('id-ID')}`;
+}
+
+/** Escape karakter HTML agar input pengguna aman ditampilkan lewat innerHTML. */
+function escapeHTML(text) {
+  const div = document.createElement('div');
+  div.textContent = String(text ?? '');
+  return div.innerHTML;
+}
+
+/** Helper generik untuk membuka / menutup modal via class 'is-open'. */
+function openModal(modalId) {
+  document.getElementById(modalId)?.classList.add('is-open');
+}
+function closeModal(modalId) {
+  document.getElementById(modalId)?.classList.remove('is-open');
+}
+
+// Tombol dengan atribut data-close-modal dipakai di beberapa modal sekaligus
+document.addEventListener('click', (event) => {
+  const closeBtn = event.target.closest('[data-close-modal]');
+  if (closeBtn) {
+    closeModal(closeBtn.dataset.closeModal);
   }
-}
+  // Klik area gelap di luar kotak modal juga menutup modal
+  if (event.target.classList.contains('modal-overlay')) {
+    event.target.classList.remove('is-open');
+  }
+});
 
-function showBmError(message) {
-  bmFormError.textContent = message;
-  bmFormError.classList.toggle("hidden", !message);
-}
+/* ============================================================================
+   2. NAVIGASI TAB — state disimpan & dipulihkan lewat query string URL
+      Contoh: index.html?tab=bookmark
+   ============================================================================ */
 
-function renderBookmarks() {
-  const query = bmSearch.value.trim().toLowerCase();
-  const sort = bmSort.value;
+const TabNavigation = (() => {
+  const TAB_IDS = ['expense', 'bookmark', 'quiz'];
+  const DEFAULT_TAB = 'expense';
 
-  let items = bookmarks.filter(
-    (b) =>
-      b.name.toLowerCase().includes(query) ||
-      b.url.toLowerCase().includes(query) ||
-      b.category.toLowerCase().includes(query)
-  );
+  function getTabFromURL() {
+    const params = new URLSearchParams(window.location.search);
+    const tab = params.get('tab');
+    return TAB_IDS.includes(tab) ? tab : DEFAULT_TAB;
+  }
 
-  items = [...items].sort((a, b) => {
-    switch (sort) {
-      case "title-asc":
-        return a.name.localeCompare(b.name, "id");
-      case "title-desc":
-        return b.name.localeCompare(a.name, "id");
-      case "newest":
-      default:
-        return b.createdAt - a.createdAt;
+  function setTabInURL(tabId) {
+    const url = new URL(window.location.href);
+    url.searchParams.set('tab', tabId);
+    window.history.replaceState({}, '', url);
+  }
+
+  function activateTab(tabId) {
+    TAB_IDS.forEach((id) => {
+      const panel = document.getElementById(`panel-${id}`);
+      const button = document.getElementById(`tab-btn-${id}`);
+      const isActive = id === tabId;
+      panel.classList.toggle('is-active', isActive);
+      button.setAttribute('aria-selected', String(isActive));
+    });
+    setTabInURL(tabId);
+  }
+
+  function init() {
+    TAB_IDS.forEach((id) => {
+      document.getElementById(`tab-btn-${id}`).addEventListener('click', () => activateTab(id));
+    });
+    // Pulihkan tab terakhir dari query string saat halaman dimuat / di-refresh
+    activateTab(getTabFromURL());
+
+    // Jika pengguna menekan tombol back/forward browser, ikuti perubahan query
+    window.addEventListener('popstate', () => activateTab(getTabFromURL()));
+  }
+
+  return { init };
+})();
+
+/* ============================================================================
+   3. MODUL EXPENSE TRACKER
+   ============================================================================ */
+
+const ExpenseTracker = (() => {
+  let expenses = loadFromStorage(STORAGE_KEYS.EXPENSE, []);
+  let deleteTargetId = null;
+
+  // --- Referensi DOM ---
+  const form = document.getElementById('expense-form');
+  const titleInput = document.getElementById('expense-title');
+  const categoryInput = document.getElementById('expense-category');
+  const amountInput = document.getElementById('expense-amount');
+  const typeInput = document.getElementById('expense-type');
+  const dateInput = document.getElementById('expense-date');
+
+  const listContainer = document.getElementById('expense-list');
+  const emptyState = document.getElementById('expense-empty');
+
+  const searchInput = document.getElementById('expense-search');
+  const filterTypeSelect = document.getElementById('expense-filter-type');
+  const filterCategorySelect = document.getElementById('expense-filter-category');
+  const sortSelect = document.getElementById('expense-sort');
+
+  const totalIncomeEl = document.getElementById('expense-total-income');
+  const totalExpenseEl = document.getElementById('expense-total-expense');
+  const balanceEl = document.getElementById('expense-balance');
+
+  // Modal ubah
+  const editModalId = 'expense-modal';
+  const editForm = document.getElementById('expense-edit-form');
+  const editIdInput = document.getElementById('expense-edit-id');
+  const editTitleInput = document.getElementById('expense-edit-title');
+  const editCategoryInput = document.getElementById('expense-edit-category');
+  const editAmountInput = document.getElementById('expense-edit-amount');
+  const editTypeInput = document.getElementById('expense-edit-type');
+  const editDateInput = document.getElementById('expense-edit-date');
+
+  // Modal hapus
+  const deleteModalId = 'expense-delete-modal';
+  const deleteConfirmBtn = document.getElementById('expense-delete-confirm-btn');
+
+  function persist() {
+    saveToStorage(STORAGE_KEYS.EXPENSE, expenses);
+  }
+
+  /** Validasi form tambah/ubah transaksi. Mengembalikan objek error (kosong = valid). */
+  function validate({ title, amount, date }) {
+    const errors = {};
+    if (!title || !title.trim()) errors.title = 'Judul wajib diisi.';
+    const numericAmount = Number(amount);
+    if (!amount || Number.isNaN(numericAmount) || numericAmount <= 0) {
+      errors.amount = 'Jumlah harus berupa angka lebih dari 0.';
     }
-  });
-
-  const noBookmarks = bookmarks.length === 0;
-  bmEmpty.classList.toggle("hidden", !noBookmarks);
-  bmList.classList.toggle("hidden", noBookmarks);
-  bmList.innerHTML = "";
-
-  if (noBookmarks) return;
-
-  if (items.length === 0) {
-    const li = document.createElement("li");
-    li.className = "rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600";
-    li.textContent = "Tidak ada bookmark yang cocok dengan pencarian.";
-    bmList.appendChild(li);
-    return;
+    if (!date) errors.date = 'Tanggal wajib diisi.';
+    return errors;
   }
 
-  items.forEach((b) => {
-    const li = document.createElement("li");
-    li.className = "flex flex-col sm:flex-row sm:items-center gap-3 rounded-xl border border-slate-200 px-4 py-3";
+  function showFieldError(errorElId, inputEl, message) {
+    const errorEl = document.getElementById(errorElId);
+    if (errorEl) errorEl.textContent = message || '';
+    if (inputEl) inputEl.classList.toggle('input-error', Boolean(message));
+  }
 
-    const info = document.createElement("div");
-    info.className = "flex-1 min-w-0";
+  function clearFormErrors(prefix) {
+    ['title', 'amount', 'date'].forEach((field) => {
+      showFieldError(`${prefix}-${field}-error`, document.getElementById(`${prefix}-${field}`), '');
+    });
+  }
 
-    const titleRow = document.createElement("div");
-    titleRow.className = "flex items-center gap-2 flex-wrap";
+  // --- Tambah transaksi ---
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const data = {
+      title: titleInput.value,
+      category: categoryInput.value,
+      amount: amountInput.value,
+      type: typeInput.value,
+      date: dateInput.value,
+    };
 
-    const link = document.createElement("a");
-    link.href = b.url;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    link.className = "font-medium text-sky-700 hover:underline truncate";
-    link.textContent = b.name;
+    clearFormErrors('expense');
+    const errors = validate(data);
+    if (errors.title) showFieldError('expense-title-error', titleInput, errors.title);
+    if (errors.amount) showFieldError('expense-amount-error', amountInput, errors.amount);
+    if (errors.date) showFieldError('expense-date-error', dateInput, errors.date);
+    if (Object.keys(errors).length > 0) return;
 
-    const catBadge = document.createElement("span");
-    catBadge.className = "inline-flex text-xs font-semibold px-2 py-0.5 rounded-md bg-violet-100 text-violet-800";
-    catBadge.textContent = b.category;
+    expenses.push({
+      id: generateId(),
+      title: data.title.trim(),
+      category: data.category,
+      amount: Number(data.amount),
+      type: data.type,
+      date: data.date,
+      createdAt: Date.now(),
+    });
 
-    titleRow.append(link, catBadge);
+    persist();
+    form.reset();
+    render();
+  });
 
-    const urlEl = document.createElement("p");
-    urlEl.className = "text-xs text-slate-500 truncate mt-0.5";
-    urlEl.textContent = b.url;
+  // --- Buka modal ubah ---
+  function openEditModal(id) {
+    const item = expenses.find((exp) => exp.id === id);
+    if (!item) return;
+    editIdInput.value = item.id;
+    editTitleInput.value = item.title;
+    editCategoryInput.value = item.category;
+    editAmountInput.value = item.amount;
+    editTypeInput.value = item.type;
+    editDateInput.value = item.date;
+    clearFormErrors('expense-edit');
+    openModal(editModalId);
+  }
 
-    info.append(titleRow, urlEl);
+  editForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const data = {
+      title: editTitleInput.value,
+      amount: editAmountInput.value,
+      date: editDateInput.value,
+    };
 
-    if (b.note) {
-      const noteEl = document.createElement("p");
-      noteEl.className = "text-xs text-slate-500 italic mt-1";
-      noteEl.textContent = b.note;
-      info.appendChild(noteEl);
+    clearFormErrors('expense-edit');
+    const errors = validate(data);
+    if (errors.title) showFieldError('expense-edit-title-error', editTitleInput, errors.title);
+    if (errors.amount) showFieldError('expense-edit-amount-error', editAmountInput, errors.amount);
+    if (errors.date) showFieldError('expense-edit-date-error', editDateInput, errors.date);
+    if (Object.keys(errors).length > 0) return;
+
+    const index = expenses.findIndex((exp) => exp.id === editIdInput.value);
+    if (index !== -1) {
+      expenses[index] = {
+        ...expenses[index],
+        title: data.title.trim(),
+        category: editCategoryInput.value,
+        amount: Number(data.amount),
+        type: editTypeInput.value,
+        date: data.date,
+      };
+      persist();
+      render();
+    }
+    closeModal(editModalId);
+  });
+
+  // --- Hapus transaksi (via modal konfirmasi) ---
+  function openDeleteModal(id) {
+    deleteTargetId = id;
+    openModal(deleteModalId);
+  }
+
+  deleteConfirmBtn.addEventListener('click', () => {
+    if (deleteTargetId) {
+      expenses = expenses.filter((exp) => exp.id !== deleteTargetId);
+      persist();
+      render();
+    }
+    deleteTargetId = null;
+    closeModal(deleteModalId);
+  });
+
+  // --- Filter, cari, sort ---
+  function getVisibleExpenses() {
+    const keyword = searchInput.value.trim().toLowerCase();
+    const typeFilter = filterTypeSelect.value;
+    const categoryFilter = filterCategorySelect.value;
+    const sortMode = sortSelect.value;
+
+    let result = expenses.filter((exp) => {
+      const matchesKeyword = !keyword || exp.title.toLowerCase().includes(keyword);
+      const matchesType = typeFilter === 'all' || exp.type === typeFilter;
+      const matchesCategory = categoryFilter === 'all' || exp.category === categoryFilter;
+      return matchesKeyword && matchesType && matchesCategory;
+    });
+
+    result = result.sort((a, b) => {
+      switch (sortMode) {
+        case 'oldest':
+          return a.createdAt - b.createdAt;
+        case 'amount-desc':
+          return b.amount - a.amount;
+        case 'amount-asc':
+          return a.amount - b.amount;
+        case 'newest':
+        default:
+          return b.createdAt - a.createdAt;
+      }
+    });
+
+    return result;
+  }
+
+  function renderSummary() {
+    const totalIncome = expenses
+      .filter((exp) => exp.type === 'pemasukan')
+      .reduce((sum, exp) => sum + exp.amount, 0);
+    const totalExpense = expenses
+      .filter((exp) => exp.type === 'pengeluaran')
+      .reduce((sum, exp) => sum + exp.amount, 0);
+
+    totalIncomeEl.textContent = formatRupiah(totalIncome);
+    totalExpenseEl.textContent = formatRupiah(totalExpense);
+    balanceEl.textContent = formatRupiah(totalIncome - totalExpense);
+  }
+
+  function createExpenseRow(item) {
+    const row = document.createElement('div');
+    row.className = 'row-card p-3 flex flex-wrap items-center justify-between gap-3';
+
+    const isIncome = item.type === 'pemasukan';
+    const badgeClass = isIncome ? 'badge-income' : 'badge-expense';
+    const badgeLabel = isIncome ? 'Pemasukan' : 'Pengeluaran';
+    const amountSign = isIncome ? '+' : '-';
+    const amountColor = isIncome ? 'text-leaf' : 'text-rust';
+
+    row.innerHTML = `
+      <div class="min-w-[10rem]">
+        <p class="font-semibold text-sm">${escapeHTML(item.title)}</p>
+        <div class="flex flex-wrap items-center gap-2 mt-1">
+          <span class="badge ${badgeClass}">${badgeLabel}</span>
+          <span class="badge badge-cat">${escapeHTML(item.category)}</span>
+          <span class="text-xs text-inkmuted">${escapeHTML(item.date)}</span>
+        </div>
+      </div>
+      <div class="flex items-center gap-4">
+        <p class="font-display font-semibold ${amountColor}">${amountSign} ${formatRupiah(item.amount)}</p>
+        <div class="flex gap-1">
+          <button type="button" class="btn-edit p-2 rounded hover:bg-[#EDE9DA]" aria-label="Ubah transaksi">
+            <i class="ti ti-pencil" aria-hidden="true"></i>
+          </button>
+          <button type="button" class="btn-delete p-2 rounded hover:bg-[#EDE9DA]" aria-label="Hapus transaksi">
+            <i class="ti ti-trash text-rust" aria-hidden="true"></i>
+          </button>
+        </div>
+      </div>
+    `;
+
+    row.querySelector('.btn-edit').addEventListener('click', () => openEditModal(item.id));
+    row.querySelector('.btn-delete').addEventListener('click', () => openDeleteModal(item.id));
+    return row;
+  }
+
+  function render() {
+    renderSummary();
+    const visible = getVisibleExpenses();
+
+    listContainer.innerHTML = '';
+    if (visible.length === 0) {
+      emptyState.classList.remove('hidden');
+    } else {
+      emptyState.classList.add('hidden');
+      const fragment = document.createDocumentFragment();
+      visible.forEach((item) => fragment.appendChild(createExpenseRow(item)));
+      listContainer.appendChild(fragment);
+    }
+  }
+
+  function init() {
+    [searchInput, filterTypeSelect, filterCategorySelect, sortSelect].forEach((el) => {
+      el.addEventListener('input', render);
+      el.addEventListener('change', render);
+    });
+    render();
+  }
+
+  return { init };
+})();
+
+/* ============================================================================
+   4. MODUL BOOKMARK MANAGER
+   ============================================================================ */
+
+const BookmarkManager = (() => {
+  let bookmarks = loadFromStorage(STORAGE_KEYS.BOOKMARK, []);
+  let deleteTargetId = null;
+
+  // --- Referensi DOM ---
+  const form = document.getElementById('bookmark-form');
+  const titleInput = document.getElementById('bookmark-title');
+  const urlInput = document.getElementById('bookmark-url');
+  const categoryInput = document.getElementById('bookmark-category');
+  const noteInput = document.getElementById('bookmark-note');
+
+  const listContainer = document.getElementById('bookmark-list');
+  const emptyState = document.getElementById('bookmark-empty');
+
+  const searchInput = document.getElementById('bookmark-search');
+  const sortSelect = document.getElementById('bookmark-sort');
+
+  // Modal ubah
+  const editModalId = 'bookmark-modal';
+  const editForm = document.getElementById('bookmark-edit-form');
+  const editIdInput = document.getElementById('bookmark-edit-id');
+  const editTitleInput = document.getElementById('bookmark-edit-title');
+  const editUrlInput = document.getElementById('bookmark-edit-url');
+  const editCategoryInput = document.getElementById('bookmark-edit-category');
+  const editNoteInput = document.getElementById('bookmark-edit-note');
+
+  // Modal hapus
+  const deleteModalId = 'bookmark-delete-modal';
+  const deleteConfirmBtn = document.getElementById('bookmark-delete-confirm-btn');
+
+  function persist() {
+    saveToStorage(STORAGE_KEYS.BOOKMARK, bookmarks);
+  }
+
+  /** Validasi URL sederhana: wajib diawali http:// atau https:// dan punya domain. */
+  function isValidURL(value) {
+    if (!/^https?:\/\/.+/i.test(value.trim())) return false;
+    try {
+      new URL(value.trim());
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function validate({ title, url, category }) {
+    const errors = {};
+    if (!title || !title.trim()) errors.title = 'Nama wajib diisi.';
+    if (!url || !url.trim()) {
+      errors.url = 'URL wajib diisi.';
+    } else if (!isValidURL(url)) {
+      errors.url = 'URL harus diawali http:// atau https://';
+    }
+    if (!category || !category.trim()) errors.category = 'Kategori wajib diisi.';
+    return errors;
+  }
+
+  function showFieldError(errorElId, inputEl, message) {
+    const errorEl = document.getElementById(errorElId);
+    if (errorEl) errorEl.textContent = message || '';
+    if (inputEl) inputEl.classList.toggle('input-error', Boolean(message));
+  }
+
+  function clearFormErrors(prefix) {
+    ['title', 'url', 'category'].forEach((field) => {
+      showFieldError(`${prefix}-${field}-error`, document.getElementById(`${prefix}-${field}`), '');
+    });
+  }
+
+  // --- Tambah bookmark ---
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const data = {
+      title: titleInput.value,
+      url: urlInput.value,
+      category: categoryInput.value,
+      note: noteInput.value,
+    };
+
+    clearFormErrors('bookmark');
+    const errors = validate(data);
+    if (errors.title) showFieldError('bookmark-title-error', titleInput, errors.title);
+    if (errors.url) showFieldError('bookmark-url-error', urlInput, errors.url);
+    if (errors.category) showFieldError('bookmark-category-error', categoryInput, errors.category);
+    if (Object.keys(errors).length > 0) return;
+
+    bookmarks.push({
+      id: generateId(),
+      title: data.title.trim(),
+      url: data.url.trim(),
+      category: data.category.trim(),
+      note: data.note.trim(),
+      createdAt: Date.now(),
+    });
+
+    persist();
+    form.reset();
+    render();
+  });
+
+  // --- Buka modal ubah ---
+  function openEditModal(id) {
+    const item = bookmarks.find((bm) => bm.id === id);
+    if (!item) return;
+    editIdInput.value = item.id;
+    editTitleInput.value = item.title;
+    editUrlInput.value = item.url;
+    editCategoryInput.value = item.category;
+    editNoteInput.value = item.note;
+    clearFormErrors('bookmark-edit');
+    openModal(editModalId);
+  }
+
+  editForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const data = {
+      title: editTitleInput.value,
+      url: editUrlInput.value,
+      category: editCategoryInput.value,
+    };
+
+    clearFormErrors('bookmark-edit');
+    const errors = validate(data);
+    if (errors.title) showFieldError('bookmark-edit-title-error', editTitleInput, errors.title);
+    if (errors.url) showFieldError('bookmark-edit-url-error', editUrlInput, errors.url);
+    if (errors.category) showFieldError('bookmark-edit-category-error', editCategoryInput, errors.category);
+    if (Object.keys(errors).length > 0) return;
+
+    const index = bookmarks.findIndex((bm) => bm.id === editIdInput.value);
+    if (index !== -1) {
+      bookmarks[index] = {
+        ...bookmarks[index],
+        title: data.title.trim(),
+        url: data.url.trim(),
+        category: data.category.trim(),
+        note: editNoteInput.value.trim(),
+      };
+      persist();
+      render();
+    }
+    closeModal(editModalId);
+  });
+
+  // --- Hapus bookmark (via modal konfirmasi) ---
+  function openDeleteModal(id) {
+    deleteTargetId = id;
+    openModal(deleteModalId);
+  }
+
+  deleteConfirmBtn.addEventListener('click', () => {
+    if (deleteTargetId) {
+      bookmarks = bookmarks.filter((bm) => bm.id !== deleteTargetId);
+      persist();
+      render();
+    }
+    deleteTargetId = null;
+    closeModal(deleteModalId);
+  });
+
+  // --- Cari & sort ---
+  function getVisibleBookmarks() {
+    const keyword = searchInput.value.trim().toLowerCase();
+    const sortMode = sortSelect.value;
+
+    let result = bookmarks.filter((bm) => {
+      if (!keyword) return true;
+      return (
+        bm.title.toLowerCase().includes(keyword) ||
+        bm.url.toLowerCase().includes(keyword) ||
+        bm.category.toLowerCase().includes(keyword)
+      );
+    });
+
+    result = result.sort((a, b) => {
+      switch (sortMode) {
+        case 'title-asc':
+          return a.title.localeCompare(b.title);
+        case 'title-desc':
+          return b.title.localeCompare(a.title);
+        case 'newest':
+        default:
+          return b.createdAt - a.createdAt;
+      }
+    });
+
+    return result;
+  }
+
+  function createBookmarkRow(item) {
+    const row = document.createElement('div');
+    row.className = 'row-card p-3 flex flex-wrap items-center justify-between gap-3';
+
+    row.innerHTML = `
+      <div class="min-w-[12rem]">
+        <a href="${escapeHTML(item.url)}" target="_blank" rel="noopener noreferrer"
+           class="font-semibold text-sm text-brand hover:underline inline-flex items-center gap-1">
+          ${escapeHTML(item.title)} <i class="ti ti-external-link text-xs" aria-hidden="true"></i>
+        </a>
+        <div class="flex flex-wrap items-center gap-2 mt-1">
+          <span class="badge badge-cat">${escapeHTML(item.category)}</span>
+          <span class="text-xs text-inkmuted truncate max-w-[16rem] inline-block align-middle">${escapeHTML(item.url)}</span>
+        </div>
+        ${item.note ? `<p class="text-xs text-inkmuted mt-1">${escapeHTML(item.note)}</p>` : ''}
+      </div>
+      <div class="flex gap-1">
+        <button type="button" class="btn-edit p-2 rounded hover:bg-[#EDE9DA]" aria-label="Ubah bookmark">
+          <i class="ti ti-pencil" aria-hidden="true"></i>
+        </button>
+        <button type="button" class="btn-delete p-2 rounded hover:bg-[#EDE9DA]" aria-label="Hapus bookmark">
+          <i class="ti ti-trash text-rust" aria-hidden="true"></i>
+        </button>
+      </div>
+    `;
+
+    row.querySelector('.btn-edit').addEventListener('click', () => openEditModal(item.id));
+    row.querySelector('.btn-delete').addEventListener('click', () => openDeleteModal(item.id));
+    return row;
+  }
+
+  function render() {
+    const visible = getVisibleBookmarks();
+
+    listContainer.innerHTML = '';
+    if (visible.length === 0) {
+      emptyState.classList.remove('hidden');
+    } else {
+      emptyState.classList.add('hidden');
+      const fragment = document.createDocumentFragment();
+      visible.forEach((item) => fragment.appendChild(createBookmarkRow(item)));
+      listContainer.appendChild(fragment);
+    }
+  }
+
+  function init() {
+    [searchInput, sortSelect].forEach((el) => {
+      el.addEventListener('input', render);
+      el.addEventListener('change', render);
+    });
+    render();
+  }
+
+  return { init };
+})();
+
+/* ============================================================================
+   5. MODUL QUIZ APP
+   ============================================================================ */
+
+const QuizApp = (() => {
+  // Soal disimpan sebagai array of object (bukan hardcode HTML per soal)
+  const QUESTIONS = [
+    {
+      question: 'Tag HTML apa yang digunakan untuk membuat tautan (link)?',
+      options: ['<link>', '<a>', '<href>', '<nav>'],
+      answerIndex: 1,
+    },
+    {
+      question: 'Properti CSS apa yang digunakan untuk mengubah warna teks?',
+      options: ['background-color', 'text-align', 'color', 'font-style'],
+      answerIndex: 2,
+    },
+    {
+      question: 'Fungsi JavaScript apa yang digunakan untuk mengubah string JSON menjadi objek?',
+      options: ['JSON.stringify()', 'JSON.parse()', 'JSON.toObject()', 'Object.parse()'],
+      answerIndex: 1,
+    },
+    {
+      question: 'Metode array JavaScript apa yang digunakan untuk menyaring elemen sesuai kondisi tertentu?',
+      options: ['map()', 'reduce()', 'filter()', 'sort()'],
+      answerIndex: 2,
+    },
+    {
+      question: 'Media penyimpanan browser apa yang datanya tetap ada meski browser ditutup dan dibuka lagi?',
+      options: ['sessionStorage', 'cookie session', 'localStorage', 'variabel global'],
+      answerIndex: 2,
+    },
+    {
+      question: 'Selector JavaScript mana yang mengembalikan elemen pertama yang cocok dengan sebuah CSS selector?',
+      options: ['document.querySelectorAll()', 'document.getElementsByClassName()', 'document.querySelector()', 'document.getAll()'],
+      answerIndex: 2,
+    },
+  ];
+
+  const TOTAL_QUESTIONS = QUESTIONS.length;
+
+  let currentIndex = 0;
+  let score = 0;
+  let hasAnsweredCurrent = false;
+
+  // --- Referensi DOM ---
+  const startScreen = document.getElementById('quiz-start-screen');
+  const questionScreen = document.getElementById('quiz-question-screen');
+  const resultScreen = document.getElementById('quiz-result-screen');
+
+  const startBtn = document.getElementById('quiz-start-btn');
+  const restartBtn = document.getElementById('quiz-restart-btn');
+  const nextBtn = document.getElementById('quiz-next-btn');
+
+  const currentNumberEl = document.getElementById('quiz-current-number');
+  const totalNumberEl = document.getElementById('quiz-total-number');
+  const currentScoreEl = document.getElementById('quiz-current-score');
+  const progressBar = document.getElementById('quiz-progress-bar');
+  const questionTextEl = document.getElementById('quiz-question-text');
+  const optionsContainer = document.getElementById('quiz-options');
+  const feedbackEl = document.getElementById('quiz-feedback');
+
+  const finalScoreEl = document.getElementById('quiz-final-score');
+  const finalTotalEl = document.getElementById('quiz-final-total');
+  const resultMessageEl = document.getElementById('quiz-result-message');
+
+  const highscoreEl = document.getElementById('quiz-highscore');
+  const highscoreTotalEl = document.getElementById('quiz-highscore-total');
+
+  function showScreen(screen) {
+    [startScreen, questionScreen, resultScreen].forEach((el) => el.classList.add('hidden'));
+    screen.classList.remove('hidden');
+  }
+
+  function getHighScore() {
+    return loadFromStorage(STORAGE_KEYS.QUIZ_HIGHSCORE, 0);
+  }
+
+  function updateHighScoreDisplay() {
+    highscoreEl.textContent = getHighScore();
+    highscoreTotalEl.textContent = TOTAL_QUESTIONS;
+  }
+
+  function maybeSaveHighScore(finalScore) {
+    const currentHigh = getHighScore();
+    if (finalScore > currentHigh) {
+      saveToStorage(STORAGE_KEYS.QUIZ_HIGHSCORE, finalScore);
+    }
+  }
+
+  function startQuiz() {
+    currentIndex = 0;
+    score = 0;
+    hasAnsweredCurrent = false;
+    totalNumberEl.textContent = TOTAL_QUESTIONS;
+    showScreen(questionScreen);
+    renderQuestion();
+  }
+
+  function renderQuestion() {
+    hasAnsweredCurrent = false;
+    const item = QUESTIONS[currentIndex];
+
+    currentNumberEl.textContent = currentIndex + 1;
+    currentScoreEl.textContent = score;
+    progressBar.style.width = `${(currentIndex / TOTAL_QUESTIONS) * 100}%`;
+    questionTextEl.textContent = item.question;
+    feedbackEl.textContent = '';
+    nextBtn.classList.add('hidden');
+
+    optionsContainer.innerHTML = '';
+    item.options.forEach((optionText, optionIndex) => {
+      const optionEl = document.createElement('button');
+      optionEl.type = 'button';
+      optionEl.className = 'quiz-option w-full text-left';
+      optionEl.textContent = optionText;
+      optionEl.addEventListener('click', () => handleAnswer(optionIndex, optionEl));
+      optionsContainer.appendChild(optionEl);
+    });
+  }
+
+  function handleAnswer(selectedIndex, selectedEl) {
+    if (hasAnsweredCurrent) return; // cegah jawab dua kali untuk soal yang sama
+    hasAnsweredCurrent = true;
+
+    const item = QUESTIONS[currentIndex];
+    const isCorrect = selectedIndex === item.answerIndex;
+
+    // Tandai seluruh opsi: kunci jawaban selalu ditandai hijau, pilihan salah ditandai merah
+    Array.from(optionsContainer.children).forEach((optionEl, index) => {
+      optionEl.classList.add('is-disabled');
+      if (index === item.answerIndex) {
+        optionEl.classList.add('is-correct');
+      } else if (index === selectedIndex) {
+        optionEl.classList.add('is-wrong');
+      }
+    });
+
+    if (isCorrect) {
+      score += 1;
+      feedbackEl.textContent = 'Benar!';
+      feedbackEl.className = 'text-sm font-semibold mb-4 min-h-[1.25rem] text-leaf';
+    } else {
+      feedbackEl.textContent = `Kurang tepat. Jawaban yang benar: ${item.options[item.answerIndex]}`;
+      feedbackEl.className = 'text-sm font-semibold mb-4 min-h-[1.25rem] text-rust';
     }
 
-    const actions = document.createElement("div");
-    actions.className = "flex items-center gap-1.5 shrink-0";
+    currentScoreEl.textContent = score;
+    progressBar.style.width = `${((currentIndex + 1) / TOTAL_QUESTIONS) * 100}%`;
 
-    const editBtn = document.createElement("button");
-    editBtn.type = "button";
-    editBtn.className = "inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50";
-    editBtn.innerHTML = '<i class="ti ti-pencil"></i> Ubah';
-    editBtn.addEventListener("click", () => openBmEditModal(b.id));
-
-    const deleteBtn = document.createElement("button");
-    deleteBtn.type = "button";
-    deleteBtn.className = "inline-flex items-center gap-1 rounded-lg border border-rose-200 px-2.5 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50";
-    deleteBtn.innerHTML = '<i class="ti ti-trash"></i> Hapus';
-    deleteBtn.addEventListener("click", () => openBmDeleteModal(b.id));
-
-    actions.append(editBtn, deleteBtn);
-    li.append(info, actions);
-    bmList.appendChild(li);
-  });
-}
-
-function openBmEditModal(id) {
-  const b = bookmarks.find((x) => x.id === id);
-  if (!b) return;
-  bmEditingId = id;
-  bmEditName.value = b.name;
-  bmEditUrl.value = b.url;
-  bmEditCategory.value = b.category;
-  bmEditNote.value = b.note || "";
-  openModal(bmModalEdit);
-}
-
-function openBmDeleteModal(id) {
-  const b = bookmarks.find((x) => x.id === id);
-  if (!b) return;
-  bmDeletingId = id;
-  bmDeleteTitle.textContent = `"${b.name}"`;
-  openModal(bmModalDelete);
-}
-
-function closeBmEditModal() {
-  bmEditingId = null;
-  bmEditForm.reset();
-  closeModal(bmModalEdit);
-}
-
-function closeBmDeleteModal() {
-  bmDeletingId = null;
-  closeModal(bmModalDelete);
-}
-
-$all("[data-close-modal='bm-edit']").forEach((btn) => btn.addEventListener("click", closeBmEditModal));
-$all("[data-close-modal='bm-delete']").forEach((btn) => btn.addEventListener("click", closeBmDeleteModal));
-bmModalEdit.querySelector(".modal-backdrop").addEventListener("click", closeBmEditModal);
-bmModalDelete.querySelector(".modal-backdrop").addEventListener("click", closeBmDeleteModal);
-
-bmEditForm.addEventListener("submit", (e) => {
-  e.preventDefault();
-  const b = bookmarks.find((x) => x.id === bmEditingId);
-  if (!b) return;
-  if (!bmEditName.value.trim() || !bmEditCategory.value.trim() || !isValidUrl(bmEditUrl.value)) return;
-
-  b.name = bmEditName.value.trim();
-  b.url = bmEditUrl.value.trim();
-  b.category = bmEditCategory.value.trim();
-  b.note = bmEditNote.value.trim();
-
-  saveBookmarks();
-  renderBookmarks();
-  closeBmEditModal();
-});
-
-bmDeleteConfirm.addEventListener("click", () => {
-  if (!bmDeletingId) return;
-  bookmarks = bookmarks.filter((x) => x.id !== bmDeletingId);
-  saveBookmarks();
-  renderBookmarks();
-  closeBmDeleteModal();
-});
-
-bmForm.addEventListener("submit", (e) => {
-  e.preventDefault();
-
-  const name = bmName.value.trim();
-  const url = bmUrl.value.trim();
-  const category = bmCategory.value.trim();
-  const note = bmNote.value.trim();
-
-  if (!name || !category) {
-    showBmError("Nama dan kategori wajib diisi.");
-    return;
-  }
-  if (!isValidUrl(url)) {
-    showBmError("URL tidak valid. Pastikan diawali http:// atau https://");
-    return;
+    const isLastQuestion = currentIndex === TOTAL_QUESTIONS - 1;
+    nextBtn.textContent = '';
+    nextBtn.innerHTML = isLastQuestion
+      ? 'Lihat Hasil <i class="ti ti-flag" aria-hidden="true"></i>'
+      : 'Soal Berikutnya <i class="ti ti-arrow-right" aria-hidden="true"></i>';
+    nextBtn.classList.remove('hidden');
   }
 
-  showBmError("");
-  bookmarks.push({
-    id: crypto.randomUUID(),
-    name,
-    url,
-    category,
-    note,
-    createdAt: Date.now(),
-  });
-
-  saveBookmarks();
-  bmForm.reset();
-  renderBookmarks();
-});
-
-bmSearch.addEventListener("input", renderBookmarks);
-bmSort.addEventListener("change", renderBookmarks);
-
-renderBookmarks();
-
-/* =====================================================================
-   FITUR 3: QUIZ APP (Kuis Interaktif)
-   Key localStorage: dompetku-quiz-highscore
-   ===================================================================== */
-
-const QUIZ_HIGHSCORE_KEY = "dompetku-quiz-highscore";
-
-// Soal disimpan sebagai array of object, bukan hardcode HTML per soal
-const QUIZ_QUESTIONS = [
-  {
-    question: "Kepanjangan dari HTML adalah?",
-    options: [
-      "Hyper Text Markup Language",
-      "High Tech Modern Language",
-      "Hyperlink Text Management Language",
-      "Home Tool Markup Language",
-    ],
-    answer: 0,
-  },
-  {
-    question: "Properti CSS untuk mengubah warna teks adalah?",
-    options: ["text-color", "font-color", "color", "background-color"],
-    answer: 2,
-  },
-  {
-    question: "Cara yang benar untuk mendeklarasikan variabel di JavaScript modern adalah?",
-    options: ["variable x;", "let x;", "v x;", "int x;"],
-    answer: 1,
-  },
-  {
-    question: "Method array JavaScript untuk menambah elemen di akhir array adalah?",
-    options: ["push()", "add()", "append()", "insert()"],
-    answer: 0,
-  },
-  {
-    question: "Fungsi untuk mengambil elemen DOM berdasarkan CSS selector adalah?",
-    options: ["getElement()", "querySelector()", "findElement()", "selectElement()"],
-    answer: 1,
-  },
-  {
-    question: "Objek browser yang digunakan untuk menyimpan data secara persisten adalah?",
-    options: ["sessionStorage", "cookieStorage", "localStorage", "browserStorage"],
-    answer: 2,
-  },
-  {
-    question: "Operator perbandingan yang memeriksa nilai DAN tipe data di JavaScript adalah?",
-    options: ["==", "=", "===", "!="],
-    answer: 2,
-  },
-];
-
-let quizIndex = 0;
-let quizScore = 0;
-let quizAnswered = false;
-
-const quizStartScreen = $("#quiz-start-screen");
-const quizQuestionScreen = $("#quiz-question-screen");
-const quizResultScreen = $("#quiz-result-screen");
-
-const quizStartBtn = $("#quiz-start-btn");
-const quizNextBtn = $("#quiz-next-btn");
-const quizRestartBtn = $("#quiz-restart-btn");
-
-const quizQuestionText = $("#quiz-question-text");
-const quizOptionsEl = $("#quiz-options");
-const quizProgressEl = $("#quiz-progress");
-const quizScoreEl = $("#quiz-score");
-const quizHighscoreEl = $("#quiz-highscore");
-const quizFinalScoreEl = $("#quiz-final-score");
-const quizHighscoreMsgEl = $("#quiz-highscore-msg");
-
-function getQuizHighscore() {
-  const v = localStorage.getItem(QUIZ_HIGHSCORE_KEY);
-  return v ? Number(v) : null;
-}
-
-function showQuizHighscore() {
-  const top = getQuizHighscore();
-  quizHighscoreEl.textContent = top === null ? "—" : `${top} / ${QUIZ_QUESTIONS.length}`;
-}
-
-function startQuiz() {
-  quizIndex = 0;
-  quizScore = 0;
-  quizAnswered = false;
-  quizScoreEl.textContent = "0";
-  quizStartScreen.classList.add("hidden");
-  quizResultScreen.classList.add("hidden");
-  quizQuestionScreen.classList.remove("hidden");
-  showQuizHighscore();
-  renderQuizQuestion();
-}
-
-function renderQuizQuestion() {
-  quizAnswered = false;
-  quizNextBtn.disabled = true;
-  quizNextBtn.classList.add("bg-slate-300");
-  quizNextBtn.classList.remove("bg-amber-500", "hover:bg-amber-600");
-
-  const q = QUIZ_QUESTIONS[quizIndex];
-  quizQuestionText.textContent = q.question;
-  quizProgressEl.textContent = `${quizIndex + 1} / ${QUIZ_QUESTIONS.length}`;
-  quizOptionsEl.innerHTML = "";
-
-  q.options.forEach((optionText, i) => {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className =
-      "w-full text-left rounded-lg border border-slate-300 px-4 py-2.5 text-sm hover:bg-slate-50 transition";
-    btn.textContent = optionText;
-    btn.addEventListener("click", () => selectQuizAnswer(i, btn));
-    quizOptionsEl.appendChild(btn);
-  });
-}
-
-function selectQuizAnswer(selectedIndex, btnEl) {
-  if (quizAnswered) return;
-  quizAnswered = true;
-
-  const q = QUIZ_QUESTIONS[quizIndex];
-  const optionButtons = $all("#quiz-options button");
-
-  optionButtons.forEach((btn, i) => {
-    btn.disabled = true;
-    if (i === q.answer) {
-      btn.classList.add("border-emerald-500", "bg-emerald-50", "text-emerald-800");
-    } else if (i === selectedIndex) {
-      btn.classList.add("border-rose-500", "bg-rose-50", "text-rose-800");
+  function goToNext() {
+    const isLastQuestion = currentIndex === TOTAL_QUESTIONS - 1;
+    if (isLastQuestion) {
+      finishQuiz();
+    } else {
+      currentIndex += 1;
+      renderQuestion();
     }
-  });
-
-  if (selectedIndex === q.answer) {
-    quizScore += 1;
-    quizScoreEl.textContent = String(quizScore);
   }
 
-  quizNextBtn.disabled = false;
-  quizNextBtn.classList.remove("bg-slate-300");
-  quizNextBtn.classList.add("bg-amber-500", "hover:bg-amber-600");
-}
+  function finishQuiz() {
+    maybeSaveHighScore(score);
+    updateHighScoreDisplay();
 
-quizNextBtn.addEventListener("click", () => {
-  if (!quizAnswered) return;
-  quizIndex += 1;
-  if (quizIndex < QUIZ_QUESTIONS.length) {
-    renderQuizQuestion();
-  } else {
-    finishQuiz();
+    finalScoreEl.textContent = score;
+    finalTotalEl.textContent = TOTAL_QUESTIONS;
+
+    const ratio = score / TOTAL_QUESTIONS;
+    if (ratio === 1) {
+      resultMessageEl.textContent = 'Sempurna! Semua jawaban benar.';
+    } else if (ratio >= 0.6) {
+      resultMessageEl.textContent = 'Bagus! Pemahamanmu sudah cukup solid.';
+    } else {
+      resultMessageEl.textContent = 'Jangan menyerah, coba lagi untuk hasil lebih baik.';
+    }
+
+    showScreen(resultScreen);
   }
+
+  function init() {
+    updateHighScoreDisplay();
+    startBtn.addEventListener('click', startQuiz);
+    restartBtn.addEventListener('click', startQuiz);
+    nextBtn.addEventListener('click', goToNext);
+    showScreen(startScreen);
+  }
+
+  return { init };
+})();
+
+/* ============================================================================
+   6. BOOTSTRAP APLIKASI
+   ============================================================================ */
+
+document.addEventListener('DOMContentLoaded', () => {
+  TabNavigation.init();
+  ExpenseTracker.init();
+  BookmarkManager.init();
+  QuizApp.init();
 });
-
-function finishQuiz() {
-  quizQuestionScreen.classList.add("hidden");
-  quizResultScreen.classList.remove("hidden");
-  quizFinalScoreEl.textContent = `Skor kamu: ${quizScore} / ${QUIZ_QUESTIONS.length}`;
-
-  const top = getQuizHighscore();
-  if (top === null || quizScore > top) {
-    localStorage.setItem(QUIZ_HIGHSCORE_KEY, String(quizScore));
-    quizHighscoreMsgEl.textContent = "Selamat, ini rekor baru!";
-  } else {
-    quizHighscoreMsgEl.textContent = "";
-  }
-  showQuizHighscore();
-}
-
-quizStartBtn.addEventListener("click", startQuiz);
-quizRestartBtn.addEventListener("click", () => {
-  quizResultScreen.classList.add("hidden");
-  quizStartScreen.classList.remove("hidden");
-});
-
-showQuizHighscore();
